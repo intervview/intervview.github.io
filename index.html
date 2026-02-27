@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Загрузить видео</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; text-align: center; background: #f6f8fa; border-radius: 8px; }
+        h1 { color: #24292f; }
+        .upload-box { border: 2px dashed #cbd5e0; padding: 40px; border-radius: 10px; background: white; transition: 0.3s; }
+        .upload-box:hover { border-color: #0366d6; background: #f0f7ff; }
+        input[type="file"] { display: none; }
+        .custom-file-upload { display: inline-block; padding: 10px 20px; cursor: pointer; background: #2ea44f; color: white; border-radius: 6px; font-weight: bold; }
+        .custom-file-upload:hover { background: #2c974b; }
+        #fileName { margin-top: 15px; color: #555; font-weight: bold; }
+        #progressBar { width: 100%; height: 10px; background: #e1e4e8; border-radius: 5px; margin-top: 20px; display: none; overflow: hidden; }
+        #progressFill { height: 100%; background: #2ea44f; width: 0%; transition: width 0.3s; }
+        #status { margin-top: 20px; font-size: 14px; }
+        .success { color: #22863a; }
+        .error { color: #cb2431; }
+    </style>
+</head>
+<body>
+
+    <h1>Загрузка видео (до 2 Гб)</h1>
+    <p>Файл будет сохранен в Releases этого репозитория.</p>
+
+    <div class="upload-box">
+        <label for="fileInput" class="custom-file-upload">
+            📂 Выбрать файл
+        </label>
+        <input type="file" id="fileInput">
+        <div id="fileName">Файл не выбран</div>
+    </div>
+
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <div id="status"></div>
+
+    <script>
+        // ================= НАСТРОЙКИ =================
+        // Вставь сюда свой токен (github_pat_...)
+        const TOKEN = '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'; 
+        const OWNER = 'ТВОЙ_НИКНЕЙМ'; // Например: octocat
+        const REPO = 'НАЗВАНИЕ_РЕПОЗИТОРИЯ'; // Например: my-video-site
+        // =============================================
+
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDisplay = document.getElementById('fileName');
+        const statusDiv = document.getElementById('status');
+        const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+
+        fileInput.addEventListener('change', function() {
+            if (this.files && this.files[0]) {
+                fileNameDisplay.textContent = this.files[0].name;
+                uploadFile(this.files[0]);
+            }
+        });
+
+        async function uploadFile(file) {
+            statusDiv.className = '';
+            statusDiv.textContent = 'Подготовка...';
+            progressBar.style.display = 'block';
+            progressFill.style.width = '10%';
+
+            const releaseTag = 'auto-upload-' + new Date().toISOString().slice(0,10);
+            const releaseName = `Загрузка от ${new Date().toLocaleTimeString()}`;
+
+            try {
+                // 1. Создаем Релиз (контейнер для файла)
+                progressFill.style.width = '30%';
+                const releaseResp = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${TOKEN}`,
+                        'Accept': 'application/vnd.github+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tag_name: releaseTag,
+                        name: releaseName,
+                        body: 'Автоматическая загрузка файла пользователем',
+                        draft: false,
+                        prerelease: false
+                    })
+                });
+
+                if (!releaseResp.ok) {
+                    // Если релиз с таким тегом уже есть (редко), пробуем получить существующий
+                    if(releaseResp.status === 422) {
+                         const getResp = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${releaseTag}`, {
+                            headers: { 'Authorization': `Bearer ${TOKEN}` }
+                         });
+                         const data = await getResp.json();
+                         if(data.upload_url) await uploadAsset(data.upload_url, file);
+                         else throw new Error('Конфликт тегов');
+                    } else {
+                        throw new Error('Не удалось создать релиз');
+                    }
+                    return;
+                }
+
+                const releaseData = await releaseResp.json();
+                
+                // 2. Загружаем сам файл (Asset)
+                await uploadAsset(releaseData.upload_url, file);
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.className = 'error';
+                statusDiv.textContent = 'Ошибка: ' + error.message;
+                progressBar.style.display = 'none';
+            }
+        }
+
+        async function uploadAsset(uploadUrlTemplate, file) {
+            // Очищаем URL шаблона от {name}
+            const uploadUrl = uploadUrlTemplate.split('{?name,label}')[0] + `?name=${encodeURIComponent(file.name)}`;
+            
+            progressFill.style.width = '50%';
+            statusDiv.textContent = 'Загрузка файла... (это может занять время)';
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', uploadUrl, true);
+            xhr.setRequestHeader('Authorization', `Bearer ${TOKEN}`);
+            xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+            // xhr.setRequestHeader('Content-Length', file.size); // GitHub иногда ругается на этот заголовок при CORS, лучше убрать
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percentComplete = (e.loaded / e.total) * 100;
+                    progressFill.style.width = percentComplete + '%';
+                    statusDiv.textContent = `Загрузка: ${Math.round(percentComplete)}%`;
+                }
+            };
+
+            xhr.onload = function() {
+                if (xhr.status === 201) {
+                    const response = JSON.parse(xhr.responseText);
+                    statusDiv.className = 'success';
+                    statusDiv.innerHTML = `✅ Успешно! Файл сохранен.<br><a href="${response.browser_download_url}" target="_blank">Скачать файл</a>`;
+                    progressFill.style.width = '100%';
+                } else {
+                    throw new Error('Ошибка сервера при загрузке файла: ' + xhr.status);
+                }
+            };
+
+            xhr.onerror = function() {
+                throw new Error('Сетевая ошибка');
+            };
+
+            xhr.send(file);
+        }
+    </script>
+</body>
+</html>
